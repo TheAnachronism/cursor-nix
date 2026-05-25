@@ -1,6 +1,6 @@
 # Cursor for NixOS
 
-Unofficial Nix package for [Cursor](https://cursor.com) - the AI-first code editor.
+Unofficial Nix package for [Cursor](https://cursor.com) - the AI-first code editor and [Cursor CLI](https://cursor.com/docs/cli/overview) agent.
 
 ## Installation
 
@@ -17,6 +17,7 @@ Unofficial Nix package for [Cursor](https://cursor.com) - the AI-first code edit
         nixpkgs.config.allowUnfree = true;
         environment.systemPackages = [
           cursor.packages.x86_64-linux.default
+          cursor.packages.x86_64-linux.cursor-cli
         ];
       }];
     };
@@ -27,14 +28,34 @@ Unofficial Nix package for [Cursor](https://cursor.com) - the AI-first code edit
 ### Direct Run (no install)
 
 ```bash
+# GUI editor
 nix run github:tomsch/cursor-nix --impure
+
+# CLI agent
+nix run github:tomsch/cursor-nix#cursor-cli --impure
 ```
 
 ### Imperative Install
 
 ```bash
+# GUI editor
 nix profile install github:tomsch/cursor-nix --impure
+
+# CLI agent
+nix profile install github:tomsch/cursor-nix#cursor-cli --impure
 ```
+
+## Cursor CLI
+
+The `cursor-cli` package provides the terminal-based Cursor agent. After installation, use either `agent` or `cursor-agent`:
+
+```bash
+agent --version
+agent login
+agent
+```
+
+See the [Cursor CLI docs](https://cursor.com/docs/cli/overview) for authentication, modes, and headless usage.
 
 ## Features
 
