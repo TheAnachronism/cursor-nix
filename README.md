@@ -76,13 +76,15 @@ export NIXOS_OZONE_WL=1
 
 This is typically set by NixOS desktop modules automatically.
 
-## Update Package
+## Update Packages
 
-Maintainers can update to the latest version:
+Maintainers can update both the GUI and CLI packages to the latest upstream versions:
 
 ```bash
 ./update.sh
 ```
+
+The GitHub Actions workflow in [`.github/workflows/update.yml`](.github/workflows/update.yml) runs the same checks automatically every 6 hours.
 
 ## License
 

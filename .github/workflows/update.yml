@@ -2,7 +2,7 @@ name: Auto Update
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # Hourly
+    - cron: '0 */6 * * *'  # Every 6 hours
   workflow_dispatch:      # Manual trigger
 
 jobs:
@@ -19,10 +19,9 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Check for updates
-        id: check
+      - name: Check for GUI updates
+        id: gui
         run: |
-          # Get latest version from Cursor API
           API_RESPONSE=$(curl -sL "https://www.cursor.com/api/download?platform=linux-x64&releaseTrack=stable")
           VERSION=$(echo "$API_RESPONSE" | jq -r '.version')
           COMMIT_SHA=$(echo "$API_RESPONSE" | jq -r '.commitSha')
@@ -41,57 +40,115 @@ jobs:
             echo "needs_update=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Update package
-        if: steps.check.outputs.needs_update == 'true'
+      - name: Check for CLI updates
+        id: cli
         run: |
-          VERSION="${{ steps.check.outputs.latest }}"
-          COMMIT_SHA="${{ steps.check.outputs.commit_sha }}"
-          DEB_URL="${{ steps.check.outputs.deb_url }}"
+          INSTALL_SCRIPT=$(curl -fsSL "https://cursor.com/install")
+          VERSION=$(echo "$INSTALL_SCRIPT" | grep -oP 'downloads\.cursor\.com/lab/\K[^/]+' | head -1)
+          DOWNLOAD_URL="https://downloads.cursor.com/lab/${VERSION}/linux/x64/agent-cli-package.tar.gz"
 
-          # Get new hash (nix-prefetch-url outputs hash on stdout, progress on stderr)
+          CURRENT=$(grep 'version = ' package-cli.nix | head -1 | sed 's/.*"\(.*\)".*/\1/')
+
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "latest=$VERSION" >> $GITHUB_OUTPUT
+          echo "download_url=$DOWNLOAD_URL" >> $GITHUB_OUTPUT
+
+          if [ "$VERSION" != "$CURRENT" ]; then
+            echo "needs_update=true" >> $GITHUB_OUTPUT
+          else
+            echo "needs_update=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update GUI package
+        if: steps.gui.outputs.needs_update == 'true'
+        run: |
+          VERSION="${{ steps.gui.outputs.latest }}"
+          COMMIT_SHA="${{ steps.gui.outputs.commit_sha }}"
+          DEB_URL="${{ steps.gui.outputs.deb_url }}"
+
           HASH=$(nix-prefetch-url "$DEB_URL" 2>/dev/null)
           SRI_HASH=$(nix hash convert --to sri --hash-algo sha256 "$HASH")
 
-          # Validate hash before proceeding
           if [[ ! "$SRI_HASH" =~ ^sha256- ]]; then
             echo "ERROR: Invalid SRI hash: $SRI_HASH"
             exit 1
           fi
 
-          echo "New hash: $SRI_HASH"
+          echo "New GUI hash: $SRI_HASH"
 
-          # Update package.nix - version (use non-greedy match by stopping at quote)
           sed -i "s/version = \"[^\"]*\"/version = \"$VERSION\"/" package.nix
-
-          # Update package.nix - hash (use non-greedy match by stopping at quote)
           sed -i "s|hash = \"sha256-[^\"]*\"|hash = \"$SRI_HASH\"|" package.nix
 
-          # Update package.nix - commit SHA in URL
           OLD_SHA=$(grep -oP 'production/\K[a-f0-9]{40}' package.nix | head -1)
           sed -i "s|$OLD_SHA|$COMMIT_SHA|" package.nix
 
-          # Show diff for debugging
           git diff package.nix
 
+      - name: Update CLI package
+        if: steps.cli.outputs.needs_update == 'true'
+        run: |
+          VERSION="${{ steps.cli.outputs.latest }}"
+          DOWNLOAD_URL="${{ steps.cli.outputs.download_url }}"
+
+          HASH=$(nix-prefetch-url "$DOWNLOAD_URL" 2>/dev/null)
+          SRI_HASH=$(nix hash convert --to sri --hash-algo sha256 "$HASH")
+
+          if [[ ! "$SRI_HASH" =~ ^sha256- ]]; then
+            echo "ERROR: Invalid SRI hash: $SRI_HASH"
+            exit 1
+          fi
+
+          echo "New CLI hash: $SRI_HASH"
+
+          sed -i "s/version = \"[^\"]*\"/version = \"$VERSION\"/" package-cli.nix
+          sed -i "s|hash = \"sha256-[^\"]*\"|hash = \"$SRI_HASH\"|" package-cli.nix
+
+          git diff package-cli.nix
+
       - name: Test build
-        if: steps.check.outputs.needs_update == 'true'
+        if: steps.gui.outputs.needs_update == 'true' || steps.cli.outputs.needs_update == 'true'
         run: |
           nix build .#cursor --accept-flake-config --impure
+          nix build .#cursor-cli --accept-flake-config --impure
 
       - name: Commit and push
-        if: steps.check.outputs.needs_update == 'true'
+        if: steps.gui.outputs.needs_update == 'true' || steps.cli.outputs.needs_update == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.nix
-          git commit -m "Update cursor to ${{ steps.check.outputs.latest }}"
+
+          MSG=""
+          if [ "${{ steps.gui.outputs.needs_update }}" = "true" ]; then
+            MSG="Update cursor to ${{ steps.gui.outputs.latest }}"
+          fi
+          if [ "${{ steps.cli.outputs.needs_update }}" = "true" ]; then
+            if [ -n "$MSG" ]; then
+              MSG="$MSG, cursor-cli to ${{ steps.cli.outputs.latest }}"
+            else
+              MSG="Update cursor-cli to ${{ steps.cli.outputs.latest }}"
+            fi
+          fi
+
+          if [ "${{ steps.gui.outputs.needs_update }}" = "true" ]; then
+            git add package.nix
+          fi
+          if [ "${{ steps.cli.outputs.needs_update }}" = "true" ]; then
+            git add package-cli.nix
+          fi
+
+          git commit -m "$MSG"
           git push
 
       - name: Create Release
-        if: steps.check.outputs.needs_update == 'true'
+        if: steps.gui.outputs.needs_update == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v${{ steps.check.outputs.latest }}" \
-            --title "cursor ${{ steps.check.outputs.latest }}" \
-            --notes "Updated cursor from ${{ steps.check.outputs.current }} to ${{ steps.check.outputs.latest }}"
+          NOTES="Updated cursor from ${{ steps.gui.outputs.current }} to ${{ steps.gui.outputs.latest }}"
+          if [ "${{ steps.cli.outputs.needs_update }}" = "true" ]; then
+            NOTES="$NOTES\n\nUpdated cursor-cli from ${{ steps.cli.outputs.current }} to ${{ steps.cli.outputs.latest }}"
+          fi
+
+          gh release create "v${{ steps.gui.outputs.latest }}" \
+            --title "cursor ${{ steps.gui.outputs.latest }}" \
+            --notes "$NOTES"
